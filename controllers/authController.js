@@ -131,10 +131,97 @@ exports.login = async (req, res) => {
 
         res.json({
             token,
-            user: { id: user._id, name: user.name, email: user.email }
+            user: { id: user._id, name: user.name, email: user.email, profilePhoto: user.profilePhoto }
         });
 
     } catch (err) {
         res.status(500).json({ message: "Server error" });
+    }
+};
+
+exports.getProfile = async (req, res) => {
+    try {
+        const user = await AuthUser.findById(req.user.id).select("-password");
+        
+        if (!user) {
+            return res.status(404).json({ message: "User not found" });
+        }
+
+        res.json({
+            user: {
+                id: user._id,
+                name: user.name,
+                email: user.email,
+                profilePhoto: user.profilePhoto
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ message: "Server error", error: err.message });
+    }
+};
+
+exports.updatePassword = async (req, res) => {
+    try {
+        const { currentPassword, newPassword } = req.body;
+
+        if (!currentPassword || !newPassword) {
+            return res.status(400).json({ message: "Current password and new password are required" });
+        }
+
+        const user = await AuthUser.findById(req.user.id);
+
+        if (!user) {
+            return res.status(404).json({ message: "User not found" });
+        }
+
+        // Verify current password
+        const isMatch = await bcrypt.compare(currentPassword, user.password);
+        if (!isMatch) {
+            return res.status(400).json({ message: "Current password is incorrect" });
+        }
+
+        // Check if new password is same as current
+        const isSame = await bcrypt.compare(newPassword, user.password);
+        if (isSame) {
+            return res.status(400).json({ message: "New password must be different from current password" });
+        }
+
+        // Hash new password and update
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        user.password = hashedPassword;
+        await user.save();
+
+        res.json({ message: "Password updated successfully" });
+    } catch (err) {
+        res.status(500).json({ message: "Server error", error: err.message });
+    }
+};
+
+exports.updateProfile = async (req, res) => {
+    try {
+        const { name, profilePhoto } = req.body;
+
+        const user = await AuthUser.findById(req.user.id);
+
+        if (!user) {
+            return res.status(404).json({ message: "User not found" });
+        }
+
+        if (name) user.name = name;
+        if (profilePhoto) user.profilePhoto = profilePhoto;
+
+        await user.save();
+
+        res.json({
+            message: "Profile updated successfully",
+            user: {
+                id: user._id,
+                name: user.name,
+                email: user.email,
+                profilePhoto: user.profilePhoto
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ message: "Server error", error: err.message });
     }
 };
