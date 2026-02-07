@@ -6,7 +6,7 @@ const userSchema = new mongoose.Schema({
     address: String,
     status: {
         type: String,
-        enum: ["Select Status", "received", "not_received", "switch_off", "callback"],
+        enum: ["Select Status", "received", "not_received", "switch_off", "callback", "required", "not_required"],
         default: "Select Status"
     },
     createdBy: {

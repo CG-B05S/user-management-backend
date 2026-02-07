@@ -13,7 +13,10 @@ exports.createUser = async (req, res) => {
                 "not recived": "not_received",
                 "switch off": "switch_off",
                 "switch_off": "switch_off",
-                "callback": "callback"
+                "callback": "callback",
+                "required": "required",
+                "not required": "not_required",
+                "not_required": "not_required"
             };
             return map[value] || "Select Status";
         };
@@ -88,7 +91,10 @@ exports.bulkUploadUsers = async (req, res) => {
         "not recived": "not_received",
         "switch off": "switch_off",
         "switch_off": "switch_off",
-        "callback": "callback"
+        "callback": "callback",
+        "required": "required",
+        "not required": "not_required",
+        "not_required": "not_required"
       };
 
       return map[value] || "Select Status";
@@ -238,7 +244,10 @@ exports.updateUser = async (req, res) => {
                 "not recived": "not_received",
                 "switch off": "switch_off",
                 "switch_off": "switch_off",
-                "callback": "callback"
+                "callback": "callback",
+                "required": "required",
+                "not required": "not_required",
+                "not_required": "not_required"
             };
             return map[value] || undefined;
         };
