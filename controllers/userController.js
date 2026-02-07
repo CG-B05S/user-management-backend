@@ -3,6 +3,17 @@ const XLSX = require("xlsx");
 
 exports.createUser = async (req, res) => {
     try {
+        // Validate required fields
+        if (!req.body.contactNumber || !req.body.contactNumber.trim()) {
+            return res.status(400).json({ error: "Phone number is required" });
+        }
+
+        // Validate phone number format (10 digits only)
+        const phoneRegex = /^\d{10}$/;
+        if (!phoneRegex.test(req.body.contactNumber.trim())) {
+            return res.status(400).json({ error: "Phone number must be exactly 10 digits" });
+        }
+
         const normalizeStatus = (status) => {
             if (!status) return "Select Status";
             const value = status.toLowerCase().trim();
@@ -114,8 +125,14 @@ exports.bulkUploadUsers = async (req, res) => {
         };
 
         // basic validation
-        if (!userData.companyName) {
-          throw new Error("Company name missing");
+        if (!userData.contactNumber) {
+          throw new Error("Phone number is required");
+        }
+
+        // Validate phone number format (10 digits only)
+        const phoneRegex = /^\d{10}$/;
+        if (!phoneRegex.test(userData.contactNumber)) {
+          throw new Error("Phone number must be exactly 10 digits");
         }
 
         // Check for duplicate phone number within this upload
