@@ -165,6 +165,13 @@ exports.login = async (req, res) => {
         if (!isMatch)
             return res.status(400).json({ message: "Invalid credentials" });
 
+        if (!user.isVerified) {
+            return res.status(403).json({
+                message: "Please verify your email before logging in",
+                requiresVerification: true
+            });
+        }
+
         const token = jwt.sign(
             { id: user._id },
             process.env.JWT_SECRET,
@@ -184,7 +191,7 @@ exports.login = async (req, res) => {
 exports.getProfile = async (req, res) => {
     try {
         const user = await AuthUser.findById(req.user.id).select("-password");
-        
+
         if (!user) {
             return res.status(404).json({ message: "User not found" });
         }
@@ -314,6 +321,12 @@ exports.forgotPassword = async (req, res) => {
 
         if (!user) {
             return res.status(400).json({ message: "User not found" });
+        }
+
+        if (!user.isVerified) {
+            return res.status(403).json({
+                message: "Please verify your email before resetting password"
+            });
         }
 
         // Generate OTP
