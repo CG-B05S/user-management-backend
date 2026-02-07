@@ -4,6 +4,10 @@ const userSchema = new mongoose.Schema({
     companyName: String,
     contactNumber: String,
     address: String,
+    notes: {
+        type: String,
+        default: ""
+    },
     status: {
         type: String,
         enum: ["Select Status", "received", "not_received", "switch_off", "callback", "required", "not_required"],

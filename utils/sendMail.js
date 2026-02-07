@@ -9,8 +9,9 @@ const transporter = nodemailer.createTransport({
 });
 
 const sendMail = async ({ to, subject, html }) => {
+  const appName = process.env.APP_NAME || "User Management by CG";
   await transporter.sendMail({
-    from: process.env.EMAIL_USER,
+    from: `"${appName}" <${process.env.EMAIL_USER}>`,
     to,
     subject,
     html

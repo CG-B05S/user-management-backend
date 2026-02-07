@@ -3,6 +3,10 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const sendMail = require("../utils/sendMail");
 const axios = require("axios");
+const {
+    verificationOtpEmail,
+    resetPasswordOtpEmail
+} = require("../utils/emailTemplates");
 
 // Password strength validation
 const validatePasswordStrength = (password) => {
@@ -74,14 +78,7 @@ exports.register = async (req, res) => {
         await sendMail({
             to: email,
             subject: "Verify your email",
-            html: `
-    <div style="font-family:Arial;padding:20px">
-      <h2>Email Verification</h2>
-      <p>Your OTP is:</p>
-      <h1 style="letter-spacing:5px">${otp}</h1>
-      <p>This OTP is valid for 30 minutes.</p>
-    </div>
-  `
+            html: verificationOtpEmail(otp)
         });
 
         res.json({ message: "OTP sent to email" });
@@ -148,6 +145,43 @@ exports.verifyOTP = async (req, res) => {
         res.status(500).json({
             message: "Server error. Please try again later."
         });
+    }
+};
+
+exports.resendVerificationOtp = async (req, res) => {
+    try {
+        const { email } = req.body;
+
+        if (!email) {
+            return res.status(400).json({ message: "Email is required" });
+        }
+
+        const user = await AuthUser.findOne({ email });
+        if (!user) {
+            return res.status(400).json({ message: "User not found" });
+        }
+
+        if (user.isVerified) {
+            return res.status(400).json({ message: "User is already verified" });
+        }
+
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const otpExpiry = new Date(Date.now() + 30 * 60 * 1000);
+
+        user.otp = otp;
+        user.otpExpiresAt = otpExpiry;
+        user.otpAttempts = 0;
+        await user.save();
+
+        await sendMail({
+            to: email,
+            subject: "Verify your email",
+            html: verificationOtpEmail(otp)
+        });
+
+        res.json({ message: "OTP sent to email" });
+    } catch (err) {
+        res.status(500).json({ message: "Failed to resend OTP" });
     }
 };
 
@@ -343,15 +377,7 @@ exports.forgotPassword = async (req, res) => {
         await sendMail({
             to: email,
             subject: "Reset Your Password",
-            html: `
-    <div style="font-family:Arial;padding:20px">
-      <h2>Password Reset Request</h2>
-      <p>We received a request to reset your password. Use the OTP below:</p>
-      <h1 style="letter-spacing:5px">${otp}</h1>
-      <p>This OTP is valid for 30 minutes.</p>
-      <p>If you didn't request this, please ignore this email.</p>
-    </div>
-  `
+            html: resetPasswordOtpEmail(otp)
         });
 
         res.json({ message: "OTP sent to your email" });
@@ -450,3 +476,4 @@ exports.resetPassword = async (req, res) => {
         res.status(500).json({ message: "Password reset failed", error: err.message });
     }
 };
+

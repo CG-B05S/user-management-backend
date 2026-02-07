@@ -47,8 +47,12 @@ exports.createUser = async (req, res) => {
             }
         }
 
+        const normalizedNotes =
+            typeof req.body.notes === "string" ? req.body.notes.trim() : "";
+
         const user = await User.create({
             ...req.body,
+            notes: normalizedNotes,
             status: normalizeStatus(req.body.status),
             createdBy: req.user.id
         });
@@ -120,6 +124,7 @@ exports.bulkUploadUsers = async (req, res) => {
           companyName: row["COMPANY  NAME"]?.trim(),
           contactNumber: row["Contact No"]?.toString().trim(),
           address: row["Address"] || "",
+          notes: (row["Notes"] || row["Note"] || "").toString().trim(),
           status: normalizeStatus(row["Status"]),
           createdBy: req.user.id
         };
@@ -209,7 +214,8 @@ exports.getUsers = async (req, res) => {
             query.$or = [
                 { companyName: { $regex: search, $options: "i" } },
                 { contactNumber: { $regex: search, $options: "i" } },
-                { address: { $regex: search, $options: "i" } }
+                { address: { $regex: search, $options: "i" } },
+                { notes: { $regex: search, $options: "i" } }
             ];
         }
 
@@ -277,6 +283,10 @@ exports.updateUser = async (req, res) => {
         // Normalize status if provided
         if (req.body.status) {
             req.body.status = normalizeStatus(req.body.status);
+        }
+
+        if (Object.prototype.hasOwnProperty.call(req.body, "notes")) {
+            req.body.notes = typeof req.body.notes === "string" ? req.body.notes.trim() : "";
         }
 
         await User.findByIdAndUpdate(

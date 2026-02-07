@@ -2,6 +2,7 @@ const cron = require("node-cron");
 const User = require("../models/User");
 const AuthUser = require("../models/AuthUser");
 const sendMail = require("../utils/sendMail");
+const { followUpReminderEmail } = require("../utils/emailTemplates");
 
 // runs every minute
 cron.schedule("* * * * *", async () => {
@@ -31,18 +32,7 @@ cron.schedule("* * * * *", async () => {
       await sendMail({
         to: owner.email,
         subject: "Follow-up Reminder (5 Minutes)",
-        html: `
-          <div style="font-family:Arial">
-            <h3>Follow-up Reminder</h3>
-            <p>You have a follow-up scheduled in 5 minutes.</p>
-
-            <b>Company:</b> ${user.companyName}<br/>
-            <b>Contact:</b> ${user.contactNumber}<br/>
-            <b>Address:</b> ${user.address}<br/>
-            <b>Status:</b> ${user.status}<br/>
-            <b>Follow Up Time:</b> ${user.followUpDateTime}
-          </div>
-        `
+        html: followUpReminderEmail(user)
       });
 
       // prevent duplicate email
