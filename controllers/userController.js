@@ -1,17 +1,91 @@
 const User = require("../models/User");
 const XLSX = require("xlsx");
 
+const normalizeHeader = (header = "") =>
+  String(header)
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+
+const getValueByAliases = (row, aliases, fuzzyMatchers = []) => {
+  const normalizedRow = {};
+  Object.keys(row || {}).forEach((key) => {
+    normalizedRow[normalizeHeader(key)] = row[key];
+  });
+
+  for (const alias of aliases) {
+    const value = normalizedRow[normalizeHeader(alias)];
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      return value;
+    }
+  }
+
+  // Fuzzy fallback: helpful for slightly different headers like
+  // "SL NO", "ContactNo.", "Phone#", etc.
+  const keys = Object.keys(normalizedRow);
+  for (const matcher of fuzzyMatchers) {
+    const matchedKey = keys.find((k) => k.includes(matcher));
+    if (matchedKey) {
+      const value = normalizedRow[matchedKey];
+      if (value !== undefined && value !== null && String(value).trim() !== "") {
+        return value;
+      }
+    }
+  }
+
+  return "";
+};
+
+const parseFollowUpDateTime = (value) => {
+  if (value === undefined || value === null || String(value).trim() === "") {
+    return undefined;
+  }
+
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value;
+  }
+
+  // Excel numeric date serial support
+  if (typeof value === "number") {
+    const parsed = XLSX.SSF.parse_date_code(value);
+    if (parsed) {
+      return new Date(
+        Date.UTC(
+          parsed.y,
+          parsed.m - 1,
+          parsed.d,
+          parsed.H || 0,
+          parsed.M || 0,
+          Math.floor(parsed.S || 0)
+        )
+      );
+    }
+  }
+
+  const parsedDate = new Date(value);
+  if (!Number.isNaN(parsedDate.getTime())) {
+    return parsedDate;
+  }
+
+  return undefined;
+};
+
+const normalizeContactNumber = (value) => {
+  if (value === undefined || value === null) return "";
+
+  // Keep special characters, but remove all whitespace.
+  // Examples:
+  // "080 22 5590" -> "080225590"
+  // "9898098781/1090101010" -> "9898098781/1090101010"
+  return String(value).trim().replace(/\s+/g, "");
+};
+
 exports.createUser = async (req, res) => {
     try {
+        req.body.contactNumber = normalizeContactNumber(req.body.contactNumber);
+
         // Validate required fields
         if (!req.body.contactNumber || !req.body.contactNumber.trim()) {
             return res.status(400).json({ error: "Phone number is required" });
-        }
-
-        // Validate phone number format (10 digits only)
-        const phoneRegex = /^\d{10}$/;
-        if (!phoneRegex.test(req.body.contactNumber.trim())) {
-            return res.status(400).json({ error: "Phone number must be exactly 10 digits" });
         }
 
         const normalizeStatus = (status) => {
@@ -73,128 +147,208 @@ exports.createUser = async (req, res) => {
 
 exports.bulkUploadUsers = async (req, res) => {
   try {
-    console.log("🔵 Bulk upload started");
+    console.log("Bulk upload started");
     console.log("File:", req.file ? req.file.originalname : "No file");
-    
-    // Parse Excel file
+
     if (!req.file) {
-      console.log("❌ No file received");
       return res.status(400).json({ message: "No file uploaded" });
     }
 
-    console.log("📄 Parsing Excel file...");
     const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
     const sheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(worksheet);
-    
-    console.log(`✅ Parsed ${rows.length} rows from Excel`);
+
+    const rawRows = XLSX.utils.sheet_to_json(worksheet, {
+      header: 1,
+      defval: "",
+      raw: false
+    });
+
+    const isLikelyHeaderRow = (row) => {
+      if (!Array.isArray(row) || row.length === 0) return false;
+      const normalizedCells = row.map((cell) => normalizeHeader(cell));
+      const hasContact = normalizedCells.some(
+        (c) => c.includes("contact") || c.includes("mobile") || c.includes("phone")
+      );
+      const hasCompanyOrName = normalizedCells.some(
+        (c) => c.includes("company") || c === "name"
+      );
+      return hasContact && hasCompanyOrName;
+    };
+
+    let headerRowIndex = rawRows.findIndex(isLikelyHeaderRow);
+    if (headerRowIndex === -1) {
+      headerRowIndex = rawRows.findIndex(
+        (row) => Array.isArray(row) && row.some((cell) => String(cell ?? "").trim() !== "")
+      );
+    }
+
+    if (headerRowIndex === -1) {
+      return res.status(400).json({ message: "No usable rows found in file" });
+    }
+
+    const headers = (rawRows[headerRowIndex] || []).map((h) => String(h || "").trim());
+    const normalizedHeaders = headers.map((h) => normalizeHeader(h));
+
+    const columnIndexes = {
+      company: normalizedHeaders.findIndex((h) => h.includes("company") || h === "name"),
+      contact: normalizedHeaders.findIndex(
+        (h) => h.includes("contact") || h.includes("mobile") || h.includes("phone")
+      ),
+      address: normalizedHeaders.findIndex((h) => h.includes("address")),
+      status: normalizedHeaders.findIndex((h) => h.includes("status")),
+      followUp: normalizedHeaders.findIndex((h) => h.includes("followup") || h.includes("follow")),
+      notes: normalizedHeaders.findIndex(
+        (h) => h.includes("note") || h.includes("remark") || h.includes("comment")
+      )
+    };
+
+    const rows = rawRows
+      .slice(headerRowIndex + 1)
+      .filter((r) => Array.isArray(r) && r.some((cell) => String(cell).trim() !== ""))
+      .map((arr, dataIndex) => {
+        const obj = {};
+        headers.forEach((header, idx) => {
+          if (header) obj[header] = arr[idx] ?? "";
+        });
+
+        return {
+          row: obj,
+          arr,
+          rowNumber: headerRowIndex + dataIndex + 2
+        };
+      });
+
+    console.log(`Parsed ${rows.length} rows from Excel`);
 
     const successUsers = [];
     const failedRows = [];
-    const seenPhoneNumbers = new Set(); // Track duplicates within upload
+    const seenPhoneNumbers = new Set();
 
     const normalizeStatus = (status) => {
       if (!status) return "Select Status";
-
       const value = status.toLowerCase().trim();
-
       const map = {
-        "received": "received",
+        received: "received",
         "not received": "not_received",
-        "not_received": "not_received",
+        not_received: "not_received",
         "not recived": "not_received",
         "switch off": "switch_off",
-        "switch_off": "switch_off",
-        "callback": "callback",
-        "required": "required",
+        switch_off: "switch_off",
+        callback: "callback",
+        required: "required",
         "not required": "not_required",
-        "not_required": "not_required"
+        not_required: "not_required"
       };
-
       return map[value] || "Select Status";
     };
 
-    console.log("📝 Processing rows...");
     for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
+      const rowItem = rows[i];
+      const row = rowItem.row;
+      const arr = rowItem.arr;
 
       try {
+        let companyName = getValueByAliases(
+          row,
+          ["company name", "company  name", "companyname", "name"],
+          ["company", "name"]
+        );
+
+        let contactNumberRaw = getValueByAliases(
+          row,
+          [
+            "contact no",
+            "contact number",
+            "contactnumber",
+            "mobile",
+            "mobile no",
+            "phone",
+            "phone number"
+          ],
+          ["contact", "mobile", "phone"]
+        );
+
+        let address = getValueByAliases(row, ["address"], ["address"]);
+        let statusValue = getValueByAliases(row, ["status"], ["status"]);
+        let notesValue = getValueByAliases(
+          row,
+          ["notes", "note", "remarks", "comment"],
+          ["note", "remark", "comment"]
+        );
+        let followUpDateRaw = getValueByAliases(
+          row,
+          ["follow up date", "follow up date time", "followupdate", "followupdatetime"],
+          ["followup", "follow"]
+        );
+
+        if (!companyName && columnIndexes.company >= 0) companyName = arr[columnIndexes.company];
+        if (!contactNumberRaw && columnIndexes.contact >= 0) contactNumberRaw = arr[columnIndexes.contact];
+        if (!address && columnIndexes.address >= 0) address = arr[columnIndexes.address];
+        if (!statusValue && columnIndexes.status >= 0) statusValue = arr[columnIndexes.status];
+        if (!notesValue && columnIndexes.notes >= 0) notesValue = arr[columnIndexes.notes];
+        if (!followUpDateRaw && columnIndexes.followUp >= 0) followUpDateRaw = arr[columnIndexes.followUp];
+
+        if (!contactNumberRaw) {
+          const phoneLike = arr.find((cell) =>
+            /\d{8,}/.test(String(cell || "").replace(/\D/g, ""))
+          );
+          if (phoneLike) contactNumberRaw = phoneLike;
+        }
+
         const userData = {
-          companyName: row["COMPANY  NAME"]?.trim(),
-          contactNumber: row["Contact No"]?.toString().trim(),
-          address: row["Address"] || "",
-          notes: (row["Notes"] || row["Note"] || "").toString().trim(),
-          status: normalizeStatus(row["Status"]),
+          companyName: companyName ? String(companyName).trim() : "",
+          contactNumber: normalizeContactNumber(contactNumberRaw),
+          address: address ? String(address).trim() : "",
+          notes: notesValue ? String(notesValue).trim() : "",
+          status: normalizeStatus(statusValue),
+          followUpDateTime: parseFollowUpDateTime(followUpDateRaw),
           createdBy: req.user.id
         };
 
-        // basic validation
         if (!userData.contactNumber) {
           throw new Error("Phone number is required");
         }
 
-        // Validate phone number format (10 digits only)
-        const phoneRegex = /^\d{10}$/;
-        if (!phoneRegex.test(userData.contactNumber)) {
-          throw new Error("Phone number must be exactly 10 digits");
+        if (seenPhoneNumbers.has(userData.contactNumber)) {
+          throw new Error(`Duplicate phone number in this upload: ${userData.contactNumber}`);
         }
 
-        // Check for duplicate phone number within this upload
-        if (userData.contactNumber) {
-          if (seenPhoneNumbers.has(userData.contactNumber)) {
-            throw new Error(`Duplicate phone number in this upload: ${userData.contactNumber}`);
-          }
-          
-          // Check if phone number already exists for this user
-          const existingUser = await User.findOne({
-            contactNumber: userData.contactNumber,
-            createdBy: req.user.id
-          });
-          
-          if (existingUser) {
-            throw new Error(`Phone number already exists: ${userData.contactNumber}`);
-          }
-          
-          seenPhoneNumbers.add(userData.contactNumber);
+        const existingUser = await User.findOne({
+          contactNumber: userData.contactNumber,
+          createdBy: req.user.id
+        });
+
+        if (existingUser) {
+          throw new Error(`Phone number already exists: ${userData.contactNumber}`);
         }
 
+        seenPhoneNumbers.add(userData.contactNumber);
         await User.create(userData);
         successUsers.push(userData);
-        console.log(`✓ Row ${i + 1} created`);
-
       } catch (err) {
-        console.log(`✗ Row ${i + 1} failed: ${err.message}`);
         failedRows.push({
-          rowNumber: i + 2, // Excel row number
+          rowNumber: rowItem.rowNumber,
           reason: err.message,
           data: row
         });
       }
     }
 
-    console.log(`✅ Bulk upload completed: ${successUsers.length} success, ${failedRows.length} failed`);
-    
-    const response = {
+    res.json({
       message: "Bulk upload completed",
       successCount: successUsers.length,
       failedCount: failedRows.length,
       failedRows
-    };
-    
-    console.log("📤 Sending response:", response);
-    res.json(response);
-    console.log("✅ Response sent");
-
+    });
   } catch (err) {
-    console.error("❌ Bulk upload error:", err);
+    console.error("Bulk upload error:", err);
     res.status(500).json({
       message: "Bulk upload failed",
       error: err.message
     });
   }
 };
-
 
 exports.getUsers = async (req, res) => {
     try {
@@ -322,3 +476,4 @@ exports.deleteUser = async (req, res) => {
         res.status(500).json({ message: "Delete failed", error: err.message });
     }
 };
+
