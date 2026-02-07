@@ -21,4 +21,7 @@ const userSchema = new mongoose.Schema({
 
 }, { timestamps: true });
 
+// Create a compound unique index on contactNumber and createdBy (per user uniqueness)
+userSchema.index({ contactNumber: 1, createdBy: 1 }, { unique: true, sparse: true });
+
 module.exports = mongoose.model("User", userSchema);

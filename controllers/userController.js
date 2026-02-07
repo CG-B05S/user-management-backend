@@ -3,56 +3,170 @@ const XLSX = require("xlsx");
 
 exports.createUser = async (req, res) => {
     try {
+        const normalizeStatus = (status) => {
+            if (!status) return "Select Status";
+            const value = status.toLowerCase().trim();
+            const map = {
+                "received": "received",
+                "not received": "not_received",
+                "not_received": "not_received",
+                "not recived": "not_received",
+                "switch off": "switch_off",
+                "switch_off": "switch_off",
+                "callback": "callback"
+            };
+            return map[value] || "Select Status";
+        };
+
+        // Check if phone number already exists for this user
+        if (req.body.contactNumber) {
+            const existingUser = await User.findOne({
+                contactNumber: req.body.contactNumber,
+                createdBy: req.user.id
+            });
+            
+            if (existingUser) {
+                return res.status(400).json({ 
+                    message: "Duplicate phone number",
+                    error: `Phone number ${req.body.contactNumber} already exists in your users` 
+                });
+            }
+        }
+
         const user = await User.create({
             ...req.body,
+            status: normalizeStatus(req.body.status),
             createdBy: req.user.id
         });
 
         res.json(user);
-    } catch {
-        res.status(500).json({ message: "Create failed" });
+    } catch (err) {
+        // Handle MongoDB duplicate key error
+        if (err.code === 11000) {
+            const field = Object.keys(err.keyPattern)[0];
+            return res.status(400).json({ 
+                message: "Duplicate entry",
+                error: `${field} already exists` 
+            });
+        }
+        res.status(500).json({ message: "Create failed", error: err.message });
     }
 };
 
 exports.bulkUploadUsers = async (req, res) => {
-    try {
-        if (!req.file) {
-            return res.status(400).json({
-                message: "No file uploaded"
-            });
+  try {
+    console.log("🔵 Bulk upload started");
+    console.log("File:", req.file ? req.file.originalname : "No file");
+    
+    // Parse Excel file
+    if (!req.file) {
+      console.log("❌ No file received");
+      return res.status(400).json({ message: "No file uploaded" });
+    }
+
+    console.log("📄 Parsing Excel file...");
+    const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(worksheet);
+    
+    console.log(`✅ Parsed ${rows.length} rows from Excel`);
+
+    const successUsers = [];
+    const failedRows = [];
+    const seenPhoneNumbers = new Set(); // Track duplicates within upload
+
+    const normalizeStatus = (status) => {
+      if (!status) return "Select Status";
+
+      const value = status.toLowerCase().trim();
+
+      const map = {
+        "received": "received",
+        "not received": "not_received",
+        "not_received": "not_received",
+        "not recived": "not_received",
+        "switch off": "switch_off",
+        "switch_off": "switch_off",
+        "callback": "callback"
+      };
+
+      return map[value] || "Select Status";
+    };
+
+    console.log("📝 Processing rows...");
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+
+      try {
+        const userData = {
+          companyName: row["COMPANY  NAME"]?.trim(),
+          contactNumber: row["Contact No"]?.toString().trim(),
+          address: row["Address"] || "",
+          status: normalizeStatus(row["Status"]),
+          createdBy: req.user.id
+        };
+
+        // basic validation
+        if (!userData.companyName) {
+          throw new Error("Company name missing");
         }
 
-        const workbook = XLSX.read(req.file.buffer, {
-            type: "buffer"
-        });
-
-        const sheetName = workbook.SheetNames[0];
-        const sheet = workbook.Sheets[sheetName];
-
-        const rows = XLSX.utils.sheet_to_json(sheet);
-
-        const users = rows.map(row => ({
-            companyName: row["Company Name"],
-            contactNumber: row["Contact Number"],
-            address: row["Address"],
-            status: row["Status"] || "Select Status",
-            followUpDateTime: row["Follow Up"]
-                ? new Date(row["Follow Up"])
-                : null,
+        // Check for duplicate phone number within this upload
+        if (userData.contactNumber) {
+          if (seenPhoneNumbers.has(userData.contactNumber)) {
+            throw new Error(`Duplicate phone number in this upload: ${userData.contactNumber}`);
+          }
+          
+          // Check if phone number already exists for this user
+          const existingUser = await User.findOne({
+            contactNumber: userData.contactNumber,
             createdBy: req.user.id
-        }));
+          });
+          
+          if (existingUser) {
+            throw new Error(`Phone number already exists: ${userData.contactNumber}`);
+          }
+          
+          seenPhoneNumbers.add(userData.contactNumber);
+        }
 
-        await User.insertMany(users);
+        await User.create(userData);
+        successUsers.push(userData);
+        console.log(`✓ Row ${i + 1} created`);
 
-        res.json({ message: "Users uploaded successfully" });
-
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({
-            message: "Bulk upload failed"
+      } catch (err) {
+        console.log(`✗ Row ${i + 1} failed: ${err.message}`);
+        failedRows.push({
+          rowNumber: i + 2, // Excel row number
+          reason: err.message,
+          data: row
         });
+      }
     }
+
+    console.log(`✅ Bulk upload completed: ${successUsers.length} success, ${failedRows.length} failed`);
+    
+    const response = {
+      message: "Bulk upload completed",
+      successCount: successUsers.length,
+      failedCount: failedRows.length,
+      failedRows
+    };
+    
+    console.log("📤 Sending response:", response);
+    res.json(response);
+    console.log("✅ Response sent");
+
+  } catch (err) {
+    console.error("❌ Bulk upload error:", err);
+    res.status(500).json({
+      message: "Bulk upload failed",
+      error: err.message
+    });
+  }
 };
+
 
 exports.getUsers = async (req, res) => {
     try {
@@ -63,6 +177,9 @@ exports.getUsers = async (req, res) => {
         const { search, status } = req.query;
 
         let query = {};
+
+        // CRITICAL: Only show users created by the logged-in user
+        query.createdBy = req.user.id;
 
         // SEARCH
         if (search) {
@@ -100,10 +217,40 @@ exports.getUsers = async (req, res) => {
 
 exports.updateUser = async (req, res) => {
     try {
+        // CRITICAL: Verify user can only update their own created users
+        const user = await User.findById(req.params.id);
+        
+        if (!user) {
+            return res.status(404).json({ message: "User not found" });
+        }
+        
+        if (user.createdBy.toString() !== req.user.id) {
+            return res.status(403).json({ message: "Unauthorized: You can only update users you created" });
+        }
+
+        const normalizeStatus = (status) => {
+            if (!status) return undefined;
+            const value = status.toLowerCase().trim();
+            const map = {
+                "received": "received",
+                "not received": "not_received",
+                "not_received": "not_received",
+                "not recived": "not_received",
+                "switch off": "switch_off",
+                "switch_off": "switch_off",
+                "callback": "callback"
+            };
+            return map[value] || undefined;
+        };
 
         // If follow-up time changed, reset reminder flag
         if (req.body.followUpDateTime) {
             req.body.followUpReminderSent = false;
+        }
+
+        // Normalize status if provided
+        if (req.body.status) {
+            req.body.status = normalizeStatus(req.body.status);
         }
 
         await User.findByIdAndUpdate(
@@ -115,16 +262,27 @@ exports.updateUser = async (req, res) => {
         res.json({ message: "Updated" });
 
     } catch (err) {
-        res.status(500).json({ message: "Update failed" });
+        res.status(500).json({ message: "Update failed", error: err.message });
     }
 };
 
 
 exports.deleteUser = async (req, res) => {
     try {
+        // CRITICAL: Verify user can only delete their own created users
+        const user = await User.findById(req.params.id);
+        
+        if (!user) {
+            return res.status(404).json({ message: "User not found" });
+        }
+        
+        if (user.createdBy.toString() !== req.user.id) {
+            return res.status(403).json({ message: "Unauthorized: You can only delete users you created" });
+        }
+
         await User.findByIdAndDelete(req.params.id);
         res.json({ message: "Deleted" });
-    } catch {
-        res.status(500).json({ message: "Delete failed" });
+    } catch (err) {
+        res.status(500).json({ message: "Delete failed", error: err.message });
     }
 };
