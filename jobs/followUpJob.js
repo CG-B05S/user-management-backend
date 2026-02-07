@@ -6,17 +6,17 @@ const { followUpReminderEmail } = require("../utils/emailTemplates");
 
 // runs every minute
 cron.schedule("* * * * *", async () => {
-  console.log("Checking follow-ups...");
-
   try {
     const now = new Date();
 
-    // time after 5 minutes
+    // Reminder window: from 1 minute in the past to 5 minutes in the future.
+    // This prevents misses due to small clock/timing drifts.
+    const oneMinuteAgo = new Date(now.getTime() - 1 * 60000);
     const fiveMinutesLater = new Date(now.getTime() + 5 * 60000);
 
     const users = await User.find({
-      status: "callback",
       followUpDateTime: {
+        $gte: oneMinuteAgo,
         $lte: fiveMinutesLater
       },
       followUpReminderSent: false
